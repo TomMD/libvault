@@ -3,327 +3,557 @@
 #include <unordered_map>
 #include <curl/curl.h>
 #include <functional>
-#include <experimental/optional>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
-/* Tiny Types */
+namespace Vault {
+  struct TinyString {
+    TinyString() = default;
 
-struct TinyString {
-  TinyString() = default;
-  explicit TinyString(std::string value) : value_(std::move(value)) { }
+    explicit TinyString(std::string value) : value_(std::move(value)) {}
 
-  friend std::ostream& operator<<(std::ostream& os, const TinyString& object) { return os << object.value(); }
-  friend std::string operator+(const std::string& string, const TinyString& tiny) { return string + tiny.value(); }
-  friend std::string operator+(const TinyString& tiny, const std::string& string) { return tiny.value() + string; }
-  friend std::string operator+(const char* string, const TinyString& tiny) { return string + tiny.value(); }
-  friend std::string operator+(const TinyString& tiny, const char* string) { return tiny.value() + string; }
+    friend std::ostream &operator<<(std::ostream &os, const TinyString &object) { return os << object.value(); }
+    friend std::string operator+(const std::string &string, const TinyString &tiny) { return string + tiny.value(); }
+    friend std::string operator+(const TinyString &tiny, const std::string &string) { return tiny.value() + string; }
+    friend std::string operator+(const char *string, const TinyString &tiny) { return string + tiny.value(); }
+    friend std::string operator+(const TinyString &tiny, const char *string) { return tiny.value() + string; }
+    friend std::string operator+(const TinyString &tiny, const TinyString &other) { return tiny.value() + tiny.value(); }
 
-  bool empty() const {
-    return value_.empty();
+    [[nodiscard]] bool empty() const { return value_.empty(); }
+    [[nodiscard]] const char *c_str() const { return value_.c_str(); }
+    [[nodiscard]] const std::string &value() const { return value_; }
+
+  protected:
+    std::string value_;
+  };
+
+  typedef TinyString SecretId;
+  typedef TinyString HttpResponseBodyString;
+  typedef TinyString Url;
+  typedef TinyString Path;
+  typedef TinyString Token;
+  typedef TinyString Namespace;
+  typedef TinyString RoleId;
+  typedef TinyString Host;
+  typedef TinyString Port;
+  typedef TinyString Algorithm;
+  typedef TinyString SecretMount;
+  typedef TinyString RootCertificateType;
+  typedef TinyString KeyType;
+
+  struct TinyLong {
+    TinyLong() = default;
+    explicit TinyLong(const long value) : value_(value) {}
+
+    friend long operator+(const long addend, const TinyLong other) { return addend + other.value_; }
+    friend long operator+(const TinyLong other, const long addend) { return other.value_ + addend; }
+    friend long operator+(const TinyLong current, const TinyLong other) { return current.value_ + other.value_; }
+
+    friend std::string operator+(const char *other, const TinyLong current) { return other + std::to_string(current.value_); }
+
+    [[nodiscard]] long value() const { return value_; }
+
+  protected:
+    long value_;
+  };
+
+  typedef TinyLong HttpResponseStatusCode;
+  typedef TinyLong ConnectTimeout;
+  typedef TinyLong TTL;
+
+  namespace Algorithms {
+    const static Vault::Algorithm SHA1 = Vault::Algorithm{"sha1"};
+    const static Vault::Algorithm SHA2_224 = Vault::Algorithm{"sha2-224"};
+    const static Vault::Algorithm SHA2_256 = Vault::Algorithm{"sha2-256"};
+    const static Vault::Algorithm SHA2_384 = Vault::Algorithm{"sha2-384"};
+    const static Vault::Algorithm SHA2_512 = Vault::Algorithm{"sha2-512"};
   }
 
-  const char* c_str() const {
-    return value_.c_str();
+  namespace RootCertificateTypes {
+    const static Vault::RootCertificateType INTERNAL = Vault::RootCertificateType("internal");
+    const static Vault::RootCertificateType EXPORTED = Vault::RootCertificateType("exported");
   }
 
-  const std::string& value() const {
-    return value_;
+  namespace KeyTypes {
+    const static Vault::KeyType ENCRYPTION_KEY = Vault::KeyType{"encryption-key"};
+    const static Vault::KeyType SIGNING_KEY = Vault::KeyType{"signing-key"};
+    const static Vault::KeyType HMAC_KEY = Vault::KeyType{"hmac-key"};
   }
 
-protected:
-  std::string value_;
-};
+  struct HttpResponse {
+    HttpResponseStatusCode statusCode{};
+    HttpResponseBodyString body;
+  };
 
-typedef TinyString SecretId;
-typedef TinyString HttpResponseBodyString;
-typedef TinyString Url;
-typedef TinyString Path;
-typedef TinyString Token;
-typedef TinyString Namespace;
-typedef TinyString RoleId;
-typedef TinyString VaultHost;
-typedef TinyString VaultPort;
-typedef TinyString Algorithm;
-typedef TinyString SecretMount;
+  struct AuthenticationResponse {
+    HttpResponseBodyString rawResponse;
+    Token token;
+  };
 
-namespace Algorithms {
-  const static Algorithm SHA1 = Algorithm("sha1");
-  const static Algorithm SHA2_224 = Algorithm{"sha2-224"};
-  const static Algorithm SHA2_256 = Algorithm{"sha2-256"};
-  const static Algorithm SHA2_384 = Algorithm{"sha2-384"};
-  const static Algorithm SHA2_512 = Algorithm{"sha2-512"};
-};
+  class ConfigBuilder;
+  class Config;
+  class Client;
 
-// TODO: Create tiny long type
-struct HttpResponseStatusCode {
-  long value;
-};
+  using Parameters = std::unordered_map<std::string, std::string>;
+  using HttpErrorCallback = std::function<void(std::string)>;
+  using CurlSetupCallback = std::function<void(CURL *curl)>;
+  using CurlHeaderCallback = std::function<curl_slist*(curl_slist *chunk)>;
+  using JsonProducer = std::function<std::string(const Parameters &parameters)>;
+  using NoArgJsonProducer = std::function<std::string()>;
 
-struct VaultConnectTimeout {
-  long value;
-};
+  class Base64 {
+  public:
+    static bool is_base64(unsigned char c);
+    static std::string encode(const std::string& value);
+    static std::string encode(unsigned char const *bytes_to_encode, unsigned int in_len);
+    static std::string decode(std::string const &encoded_string);
+  };
 
-/* Response Types */
+  class HttpClient {
+  public:
+    explicit HttpClient(Config &config);
 
-struct HttpResponse {
-  HttpResponseStatusCode statusCode{};
-  HttpResponseBodyString body;
-};
+    HttpClient(Config &config, HttpErrorCallback errorCallback);
 
-struct AuthenticationResponse {
-  HttpResponseBodyString rawResponse;
-  Token token;
-};
+    [[nodiscard]] virtual std::optional<HttpResponse> get(const Url &url, const Token &token, const Namespace &ns) const;
+    [[nodiscard]] virtual std::optional<HttpResponse> post(const Url &url, const Token &token, const Namespace &ns, const std::string& value) const;
+    [[nodiscard]] virtual std::optional<HttpResponse> post(const Url &url, const Token &token, const Namespace &ns, const std::string& value, const CurlHeaderCallback& headerCallback) const;
+    [[nodiscard]] virtual std::optional<HttpResponse> put(const Url &url, const Token &token, const Namespace &ns, const std::string& value) const;
+    [[nodiscard]] virtual std::optional<HttpResponse> del(const Url &url, const Token &token, const Namespace &ns) const;
+    [[nodiscard]] virtual std::optional<HttpResponse> list(const Url &url, const Token &token, const Namespace &ns) const;
 
-/* Forward Declarations */
+    static bool is_success(std::optional<HttpResponse> response);
 
-class VaultConfigBuilder;
-class VaultClient;
-class VaultConfig;
-class AuthenticationStrategy;
+  private:
+    bool debug_;
+    bool verify_;
+    long connectTimeout_;
+    HttpErrorCallback errorCallback_;
 
-/* Callbacks */
+    [[nodiscard]] std::optional<HttpResponse> executeRequest(const Url &url, const Token &token, const Namespace &ns, const CurlSetupCallback &callback, const CurlHeaderCallback& headerCallback) const;
+  };
 
-using HttpErrorCallback = std::function<void(std::string)>;
-using CurlSetupCallback = std::function<void(CURL *curl)>;
+  class Config {
+  public:
+    friend class ConfigBuilder;
 
-/* Aliases */
+    bool getTls() { return tls_; }
+    bool getDebug() { return debug_; }
+    bool getVerify() { return verify_; }
+    ConnectTimeout getConnectTimeout() { return connectTimeout_; }
+    Host getHost() { return host_; }
+    Port getPort() { return port_; }
+    Namespace getNamespace() { return ns_; }
 
-using Parameters = std::unordered_map<std::string, std::string>;
-template <typename T> using optional = std::experimental::optional<T>;
+  private:
+    Config()
+      : tls_(true)
+      , debug_(false)
+      , verify_(true)
+      , connectTimeout_(ConnectTimeout{10})
+      , host_(Host{"localhost"})
+      , port_(Port{"8200"})
+      , ns_("")
+      {}
 
-/* Classes */
+    bool tls_;
+    bool debug_;
+    bool verify_;
+    ConnectTimeout connectTimeout_;
+    Host host_;
+    Port port_;
+    Namespace ns_;
+  };
 
-class Base64 {
-public:
-  static bool is_base64(unsigned char c);
-  static std::string encode(std::string value);
-  static std::string encode(unsigned char const* bytes_to_encode, unsigned int in_len);
-  static std::string decode(std::string const& encoded_string);
-};
+  class ConfigBuilder {
+  public:
+    explicit operator Config &&() {
+      return std::move(config_);
+    }
 
-class HttpClient {
-public:
-  explicit HttpClient(VaultConfig& config);
-  HttpClient(VaultConfig& config, HttpErrorCallback errorCallback);
+    ConfigBuilder &withTlsEnabled(bool flag);
+    ConfigBuilder &withDebug(bool flag);
+    ConfigBuilder &withTlsVerification(bool flag);
+    ConfigBuilder &withHost(Host host);
+    ConfigBuilder &withPort(Port port);
+    ConfigBuilder &withNamespace(Namespace ns);
+    ConfigBuilder &withConnectTimeout(ConnectTimeout timeout);
+    Config &build();
 
-  optional<HttpResponse> get(const Url& url, const Token& token, const Namespace& ns) const;
-  optional<HttpResponse> post(const Url& url, const Token& token, const Namespace& ns, std::string value) const;
-  optional<HttpResponse> del(const Url& url, const Token& token, const Namespace& ns) const;
-  optional<HttpResponse> list(const Url& url, const Token& token, const Namespace& ns) const;
+  private:
+    Config config_;
+  };
 
-  static bool is_success(optional<HttpResponse> response);
-private:
-  bool debug_;
-  bool verify_;
-  long connectTimeout_;
-  HttpErrorCallback errorCallback_;
-  optional<HttpResponse> executeRequest(const Url& url, const Token& token, const Namespace& ns, const CurlSetupCallback& callback) const;
-};
+  class AuthenticationStrategy {
+  public:
+    virtual std::optional<AuthenticationResponse> authenticate(const Client &client) = 0;
+  };
 
-class VaultConfig {
-public:
-  friend class VaultConfigBuilder;
-  bool getTls() { return tls_; }
-  bool getDebug() { return debug_; }
-  bool getVerify() { return verify_; }
-  VaultConnectTimeout getConnectTimeout() { return connectTimeout_; }
-  VaultHost getHost() { return host_; }
-  VaultPort getPort() { return port_; }
-  Namespace getNamespace() { return ns_; }
+  class Client {
+  public:
+    Client(const Client &other, Token token);
+    Client(Config &config, AuthenticationStrategy &authStrategy);
+    Client(Config &config, AuthenticationStrategy &authStrategy, HttpErrorCallback httpErrorCallback);
 
-private:
-  VaultConfig()
-  : tls_(true)
-  , debug_(false)
-  , verify_(true)
-  , connectTimeout_(VaultConnectTimeout{10})
-  , host_(VaultHost{"localhost"})
-  , port_(VaultPort{"8200"})
-  , ns_("")
-  {}
+    [[nodiscard]] virtual bool is_authenticated() const { return !token_.empty(); }
+    [[nodiscard]] virtual Url getUrl(const std::string &base, const Path &path) const;
+    [[nodiscard]] virtual bool getDebug() const { return debug_; }
+    [[nodiscard]] virtual bool getTls() const { return tls_; }
+    [[nodiscard]] virtual Host getHost() const { return host_; }
+    [[nodiscard]] virtual Port getPort() const { return port_; }
+    [[nodiscard]] virtual Token getToken() const { return token_; }
+    [[nodiscard]] virtual Namespace getNamespace() const { return namespace_; }
+    [[nodiscard]] virtual const HttpClient &getHttpClient() const { return httpClient_; }
+    [[nodiscard]] virtual AuthenticationStrategy &getAuthenticationStrategy() const { return authStrategy_; }
 
-  bool tls_;
-  bool debug_;
-  bool verify_;
-  VaultConnectTimeout connectTimeout_;
-  VaultHost host_;
-  VaultPort port_;
-  Namespace ns_;
-};
+  private:
+    bool debug_;
+    bool tls_;
+    Host host_;
+    Port port_;
+    Token token_;
+    Namespace namespace_;
+    HttpClient httpClient_;
+    AuthenticationStrategy &authStrategy_;
+  };
 
-class VaultConfigBuilder {
-public:
-  VaultConfigBuilder& withTlsEnabled(bool flag) {
-    config_.tls_ = flag;
-    return *this;
-  }
+  class HttpConsumer {
+  public:
+    static std::optional<std::string> get(const Client &client, const Url &url);
+    static std::optional<std::string> list(const Client &client, const Url &url);
+    static std::optional<std::string> post(const Client &client, const Url &url, const Parameters& parameters);
+    static std::optional<std::string> post(const Client &client, const Url &url, const Parameters &parameters, const JsonProducer &jsonProducer);
+    static std::optional<std::string> post(const Client &client, const Url &url, const Parameters &parameters, const CurlHeaderCallback &headerCallback);
+    static std::optional<std::string> put(const Client &client, const Url &url, const Parameters &parameters, const JsonProducer &jsonProducer);
+    static std::optional<std::string> del(const Client &client, const Url &url);
+    static std::optional<Vault::AuthenticationResponse> authenticate(const Client &client, const Url &url, const NoArgJsonProducer &jsonProducer);
+  };
 
-  VaultConfigBuilder& withDebug(bool flag) {
-    config_.debug_ = flag;
-    return *this;
-  }
+  class TokenStrategy : public AuthenticationStrategy {
+  public:
+    explicit TokenStrategy(Token token) : token_(std::move(token)) {}
 
-  VaultConfigBuilder& withTlsVerification(bool flag) {
-    config_.verify_ = flag;
-    return *this;
-  }
+    std::optional<AuthenticationResponse> authenticate(const Client &vaultClient) override {
+      return AuthenticationResponse{HttpResponseBodyString{""}, token_};
+    }
 
-  VaultConfigBuilder& withHost(VaultHost host) {
-    config_.host_ = std::move(host);
-    return *this;
-  }
+  private:
+    Vault::Token token_;
+  };
 
-  VaultConfigBuilder& withPort(VaultPort port) {
-    config_.port_ = std::move(port);
-    return *this;
-  }
+  class AppRoleStrategy : public AuthenticationStrategy {
+  public:
+    AppRoleStrategy(RoleId roleId, SecretId secretId);
 
-  VaultConfigBuilder& withNamespace(Namespace ns) {
-    config_.ns_ = std::move(ns);
-    return *this;
-  }
+    std::optional<AuthenticationResponse> authenticate(const Client &client) override;
 
-  VaultConfigBuilder& withConnectTimeout(VaultConnectTimeout timeout) {
-      config_.connectTimeout_ = timeout;
-      return *this;
-  }
+  private:
+    static Url getUrl(const Client &vaultClient, const Path &path);
 
-  VaultConfig& build() {
-    return config_;
-  }
+    RoleId roleId_;
+    SecretId secretId_;
+  };
 
-  explicit operator VaultConfig&&() {
-    return std::move(config_);
-  }
-private:
-  VaultConfig config_;
-};
+  class WrappedSecretAppRoleStrategy : public AuthenticationStrategy {
+  public:
+    WrappedSecretAppRoleStrategy(RoleId role_id, const Token &token);
 
-class VaultClient {
-public:
-  VaultClient(const VaultClient& other, const Token& token);
-  VaultClient(VaultConfig& config, AuthenticationStrategy& authStrategy);
-  VaultClient(VaultConfig& config, AuthenticationStrategy& authStrategy, HttpErrorCallback httpErrorCallback);
+    std::optional<AuthenticationResponse> authenticate(const Client &client) override;
 
-  bool is_authenticated() const { return !token_.empty(); }
-  Url getUrl(const std::string& base, const Path& path) const;
+  private:
+    RoleId roleId_;
+    const Token &token_;
+  };
 
-  bool getDebug() const { return debug_; }
-  bool getTls() const { return tls_; }
-  VaultHost getHost() const { return host_; }
-  VaultPort getPort() const { return port_; }
-  Token getToken() const { return token_; }
-  Namespace getNamespace() const { return namespace_; }
-  const HttpClient& getHttpClient() const { return httpClient_; }
-  AuthenticationStrategy& getAuthenticationStrategy() const { return authStrategy_; }
+  class LdapStrategy : public AuthenticationStrategy {
+  public:
+    LdapStrategy(std::string username, std::string password);
 
-private:
-  bool debug_;
-  bool tls_;
-  VaultHost host_;
-  VaultPort port_;
-  Token token_;
-  Namespace namespace_;
-  HttpClient httpClient_;
-  AuthenticationStrategy& authStrategy_;
-};
+    std::optional<AuthenticationResponse> authenticate(const Client &client) override;
 
-class AuthenticationStrategy {
-public:
-  virtual optional<AuthenticationResponse> authenticate(const VaultClient& client) = 0;
-};
+  private:
+    static Url getUrl(const Client &client, const Path &username);
 
-class VaultHttpConsumer {
-public:
-  static optional<std::string> post(const VaultClient& client, const Url& url, Parameters parameters);
-};
+    std::string username_;
+    std::string password_;
+  };
 
-class TokenStrategy : public AuthenticationStrategy {
-public:
-  explicit TokenStrategy(Token token) : token_(std::move(token)) {}
+  class KeyValue {
+  public:
+    enum Version {
+      v1, v2
+    };
 
-  optional<AuthenticationResponse> authenticate(const VaultClient& vaultClient) override {
-    return AuthenticationResponse{HttpResponseBodyString{""}, token_};
-  }
+    explicit KeyValue(const Client &client);
 
-private:
-  Token token_;
-};
+    KeyValue(const Client &client, Vault::SecretMount mount);
+    KeyValue(const Client &client, KeyValue::Version version);
+    KeyValue(const Client &client, Vault::SecretMount mount, KeyValue::Version version);
 
-class AppRoleStrategy : public AuthenticationStrategy {
-public:
-  AppRoleStrategy(RoleId roleId, SecretId secretId);
+    std::optional<std::string> list(const Path &path);
+    std::optional<std::string> read(const Path &path);
+    std::optional<std::string> create(const Path &path, const Parameters &parameters);
+    std::optional<std::string> update(const Path &path, const Parameters &parameters);
+    std::optional<std::string> del(const Path &path);
+    std::optional<std::string> del(const Path &path, std::vector<long> versions);
+    std::optional<std::string> undelete(const Path& path, std::vector<long> versions);
+    std::optional<std::string> destroy(const Path &path, std::vector<long> versions);
+    std::optional<std::string> readConfig();
+    std::optional<std::string> updateConfig(const Parameters& parameters);
+    std::optional<std::string> readMetadata(const Path& path);
+    std::optional<std::string> updateMetadata(const Path& path, const Parameters& parameters);
+    std::optional<std::string> deleteMetadata(const Path& path);
 
-  optional<AuthenticationResponse> authenticate(const VaultClient& vaultClient) override;
+  private:
+    Url getUrl(const Path& path);
+    Url getMetadataUrl(const Path& path);
 
-private:
-  static Url getUrl(const VaultClient& vaultClient, const Path& path);
-  RoleId roleId_;
-  SecretId secretId_;
-};
+    const Client &client_;
+    KeyValue::Version version_;
+    Vault::SecretMount mount_;
+  };
 
-class Unwrap {
-public:
-  static optional<SecretId> unwrap(const VaultClient &client);
+  class Transit {
+  public:
+    explicit Transit(const Client &client) : client_(client) {}
 
-private:
-  static Url getUrl(const VaultClient& client, const Path& path);
-};
+    std::optional<std::string> createKey(const Path &path, const Parameters &parameters);
+    std::optional<std::string> readKey(const Path &path);
+    std::optional<std::string> deleteKey(const Path &path);
+    std::optional<std::string> listKeys();
+    std::optional<std::string> updateKeyConfiguration(const Path &path, const Parameters &parameters);
+    std::optional<std::string> rotateKey(const Path &path);
+    std::optional<std::string> exportKey(const KeyType &keyType, const Path &path, const Path &version);
+    std::optional<std::string> encrypt(const Path &path, const Parameters &parameters);
+    std::optional<std::string> decrypt(const Path &path, const Parameters &parameters);
+    std::optional<std::string> rewrap(const Path &path, const Parameters &parameters);
+    std::optional<std::string> generateDataKey(const Path &path, const Parameters &parameters);
+    std::optional<std::string> generateWrappedDataKey(const Path &path, const Parameters &parameters);
+    std::optional<std::string> generateRandomBytes(int num_bytes, const Parameters &parameters);
+    std::optional<std::string> hash(const Algorithm &algorithm, const Parameters &parameters);
+    std::optional<std::string> hmac(const Path &key, const Algorithm &algorithm, const Parameters &Parameters);
+    std::optional<std::string> sign(const Path &key, const Algorithm &algorithm, const Parameters &Parameters);
+    std::optional<std::string> verify(const Path &key, const Algorithm &algorithm, const Parameters &Parameters);
+    std::optional<std::string> backup(const Path &path);
+    std::optional<std::string> restore(const Path &path, const Parameters &parameters);
+    std::optional<std::string> trim(const Path &path, const Parameters &parameters);
+    std::optional<std::string> configureCache(const Parameters &parameters);
+    std::optional<std::string> readCacheConfiguration();
 
-class WrappedSecretAppRoleStrategy : public AuthenticationStrategy {
-public:
-  WrappedSecretAppRoleStrategy(RoleId role_id, const Token& token);
+  private:
+    Url getUrl(const Path &path);
 
-  optional<AuthenticationResponse> authenticate(const VaultClient& vaultClient) override;
+    const Client &client_;
+  };
 
-private:
-  RoleId roleId_;
-  const Token& token_;
-};
+  class AppRole {
+  public:
+    explicit AppRole(const Client &client);
 
-class KeyValue {
-public:
-  enum Version { v1, v2 };
+    std::optional<std::string> list();
+    std::optional<std::string> create(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> update(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> read(const Path &roleName);
+    std::optional<std::string> del(const Path &roleName);
+    std::optional<std::string> getRoleId(const Path &roleName);
+    std::optional<std::string> updateRoleId(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> getRoleProperty(const Path &roleName, const Path &propertyName);
+    std::optional<std::string> updateRoleProperty(const Path &roleName, const Path &propertyName, const Parameters &parameters);
+    std::optional<std::string> deleteRoleProperty(const Path &roleName, const Path &propertyName);
 
-  explicit KeyValue(const VaultClient& client);
-  KeyValue(const VaultClient& client, SecretMount  mount);
-  KeyValue(const VaultClient& client, KeyValue::Version version);
-  KeyValue(const VaultClient& client, SecretMount mount, KeyValue::Version version);
+    std::optional<std::string> generateSecretId(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> listSecretAccessors(const Path &roleName);
+    std::optional<std::string> readSecretId(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> destroySecretId(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> readSecretIdAccessor(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> destroySecretIdAccessor(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> customSecretId(const Path &roleName, const Parameters &parameters);
+    std::optional<std::string> tidy(const Path &roleName);
 
-  optional<std::string> list(const Path& path);
-  optional<std::string> get(const Path& path);
-  optional<std::string> put(const Path& path, Parameters parameters);
-  optional<std::string> del(const Path& path);
-  optional<std::string> del(const Path& path, std::vector<long> versions);
-  optional<std::string> destroy(const Path& path, std::vector<long> versions);
+  private:
+    Vault::Url getUrl(const Path &path);
 
-private:
-  Url getUrl(const Path& path);
-  Url getMetadataUrl(const Path& path);
+    const Client &client_;
+  };
 
-  const VaultClient& client_;
-  KeyValue::Version version_;
-  SecretMount mount_;
-};
+  class Sys {
+  public:
+    explicit Sys(const Client &client);
 
-class Transit {
-public:
-  explicit Transit(const VaultClient& client);
+    std::optional<std::string> leader();
+    std::optional<std::string> health();
+    std::optional<std::string> health(const Url &leader);
+    std::optional<std::string> wrap(const Parameters &parameters, const TTL &ttl);
+    std::optional<std::string> unwrap(const Token &token);
+    std::optional<std::string> lookup(const Token &token);
+    std::optional<std::string> rewrap(const Token &token);
 
-  optional<std::string> encrypt(const Path& path, const Parameters& parameters);
-  optional<std::string> decrypt(const Path& path, const Parameters& parameters);
-  optional<std::string> generate_data_key(const Path& path, const Parameters& parameters);
-  optional<std::string> generate_wrapped_data_key(const Path& path, const Parameters& parameters);
-  optional<std::string> generate_random_bytes(int num_bytes, const Parameters& parameters);
-  optional<std::string> hash(const Algorithm& algorithm, const Parameters& parameters);
-  optional<std::string> hmac(const Path& key, const Algorithm& algorithm, const Parameters& Parameters);
-  optional<std::string> sign(const Path& key, const Algorithm& algorithm, const Parameters& Parameters);
-  optional<std::string> verify(const Path& key, const Algorithm& algorithm, const Parameters& Parameters);
+    class Auth {
+    public:
+      explicit Auth(const Client &client) : client_(client) {}
 
-private:
-  Url getUrl(const Path& path);
+      std::optional<std::string> list();
+      std::optional<std::string> enable(const Path &path, const Parameters &parameters);
+      std::optional<std::string> disable(const Path &path);
+      std::optional<std::string> readTuning(const Path &path);
+      std::optional<std::string> tune(const Path &path, const Parameters &parameters);
 
-  const VaultClient& client_;
-};
+    private:
+      Url getUrl(const Path &path);
+
+      const Client &client_;
+    };
+
+  private:
+    Url getUrl(const Path &path);
+
+    const Client &client_;
+  };
+
+  class Totp {
+  public:
+    explicit Totp(const Client &client) : client_(client) {}
+
+    std::optional<std::string> create(const Path &path, const Parameters &parameters);
+    std::optional<std::string> read(const Path &path);
+    std::optional<std::string> list();
+    std::optional<std::string> del(const Path &path);
+    std::optional<std::string> generate(const Path &path);
+    std::optional<std::string> validate(const Path &path, const Parameters &parameters);
+
+  private:
+    Url getUrl(const Path &path);
+
+    const Client &client_;
+  };
+
+  class Cubbyhole {
+  public:
+    explicit Cubbyhole(const Client &client) : client_(client) {}
+
+    std::optional<std::string> create(const Path &path, const Parameters &parameters);
+    std::optional<std::string> read(const Path &path);
+    std::optional<std::string> list(const Path &path);
+    std::optional<std::string> del(const Path &path);
+
+  private:
+    Url getUrl(const Path &path);
+
+    const Client &client_;
+  };
+
+  class Pki {
+  public:
+    explicit Pki(const Client &client) : client_(client) {}
+
+    std::optional<std::string> readCACertificate();
+    std::optional<std::string> readCACertificateChain();
+    std::optional<std::string> generateRoot(const RootCertificateType &rootCertificateType, const Parameters &parameters);
+    std::optional<std::string> deleteRoot();
+    std::optional<std::string> setUrls(const Parameters &parameters);
+    std::optional<std::string> createRole(const Path &path, const Parameters &parameters);
+    std::optional<std::string> updateRole(const Path &path, const Parameters &parameters);
+    std::optional<std::string> readRole(const Path &path);
+    std::optional<std::string> listRoles();
+    std::optional<std::string> deleteRole(const Path &path);
+    std::optional<std::string> issue(const Path &path, const Parameters &parameters);
+    std::optional<std::string> listCertificates();
+    std::optional<std::string> readCertificate(const Path &path);
+    std::optional<std::string> configureCA(const Parameters &parameters);
+    std::optional<std::string> readCrlConfiguration();
+    std::optional<std::string> setCrlConfiguration(const Parameters &parameters);
+    std::optional<std::string> readURLs();
+    std::optional<std::string> setURLs(const Parameters &parameters);
+    std::optional<std::string> readCRL();
+    std::optional<std::string> rotateCrl();
+    std::optional<std::string> generateIntermediate(const KeyType &keyType, const Parameters &parameters);
+    std::optional<std::string> signIntermediate(const Parameters &parameters);
+    std::optional<std::string> setSignedIntermediate(const Parameters &parameters);
+    std::optional<std::string> signSelfIssued(const Parameters &parameters);
+    std::optional<std::string> sign(const Path &path, const Parameters &parameters);
+    std::optional<std::string> signVerbatim(const Path &path, const Parameters &parameters);
+    std::optional<std::string> generateCertificate(const Path &path, const Parameters &parameters);
+    std::optional<std::string> tidy(const Parameters &parameters);
+    std::optional<std::string> revokeCertificate(const Parameters &parameters);
+
+  private:
+    Url getUrl(const Path &path);
+
+    const Client &client_;
+  };
+
+  class RabbitMq {
+  public:
+    explicit RabbitMq(const Client &client) : client_(client) {}
+
+    std::optional<std::string> configureConnection(const Parameters &parameters);
+    std::optional<std::string> configureLease(const Parameters &parameters);
+    std::optional<std::string> createRole(const Path &path, const Parameters &parameters);
+    std::optional<std::string> readRole(const Path &path);
+    std::optional<std::string> deleteRole(const Path &path);
+    std::optional<std::string> generateCredentials(const Path &path);
+
+  private:
+    Url getUrl(const Path &path);
+
+    const Client &client_;
+  };
+
+  class Database {
+  public:
+      explicit Database(const Client &client) : client_(client) {}
+
+      std::optional<std::string> configureConnection(const Path &path, const Parameters &parameters);
+      std::optional<std::string> readConnection(const Path &path);
+      std::optional<std::string> listConnections();
+      std::optional<std::string> deleteConnection(const Path &path);
+      std::optional<std::string> resetConnection(const Path &path);
+      std::optional<std::string> rotateRootCredentials(const Path &path);
+      std::optional<std::string> createRole(const Path &path, const Parameters &parameters);
+      std::optional<std::string> readRole(const Path &path);
+      std::optional<std::string> listRoles();
+      std::optional<std::string> deleteRole(const Path &path);
+      std::optional<std::string> generateCredentials(const Path &path);
+      std::optional<std::string> createStaticRole(const Path &path, const Parameters &parameters);
+      std::optional<std::string> readStaticRole(const Path &path);
+      std::optional<std::string> listStaticRoles();
+      std::optional<std::string> deleteStaticRole(const Path &path);
+      std::optional<std::string> getStaticCredentials(const Path &path);
+      std::optional<std::string> rotateStaticCredentials(const Path &path);
+
+  private:
+      Url getUrl(const Path &path);
+
+      const Client &client_;
+  };
+
+  class SSH {
+  public:
+    explicit SSH(const Client &client) : client_(client) {}
+
+    std::optional<std::string> createKey(const Path &path, const Parameters &parameters);
+    std::optional<std::string> updateKey(const Path &path, const Parameters &parameters);
+    std::optional<std::string> deleteKey(const Path &path);
+    std::optional<std::string> createRole(const Path &path, const Parameters &parameters);
+    std::optional<std::string> readRole(const Path &path);
+    std::optional<std::string> listRoles();
+    std::optional<std::string> deleteRole(const Path &path);
+    std::optional<std::string> listZeroAddressRoles();
+    std::optional<std::string> configureZeroAddressRoles(const Parameters &parameters);
+    std::optional<std::string> deleteZeroAddressRole();
+    std::optional<std::string> generateCredentials(const Path &path, const Parameters &parameters);
+    std::optional<std::string> listRolesByIp(const Parameters &parameters);
+    std::optional<std::string> verifyOtp(const Parameters &parameters);
+    std::optional<std::string> configureCA(const Parameters &parameters);
+    std::optional<std::string> deleteCA();
+    std::optional<std::string> readPublicKey();
+    std::optional<std::string> signKey(const Path &path, const Parameters &parameters);
+
+  private:
+    Url getUrl(const Path &path);
+
+    const Client &client_;
+  };
+}
