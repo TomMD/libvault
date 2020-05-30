@@ -1,23 +1,36 @@
 #include <iostream>
 #include "VaultClient.h"
 
-auto main() -> int
+int main(void)
 {
-    auto authStrategy = AppRole("9ce0eddc-0cd5-dd87-4c08-eb5ee9b3eca6", "043f002e-de24-6cd0-a37c-d44601400fb1");
-    auto vaultClient = VaultClient("127.0.0.1", "8200", authStrategy);
-    auto kv = KeyValue(vaultClient, KeyValue::Version::v1);
-    auto kv2 = KeyValue(vaultClient, "/test");
+  Vault::HttpErrorCallback httpErrorCallback = [&](std::string err) {
+    std::cout << err << std::endl;
+  };
 
-    std::unordered_map<std::string, std::string> data(
+
+  Vault::AppRoleStrategy authStrategy{
+    Vault::RoleId{"<role_id>"},
+    Vault::SecretId{"<secret_id>"}
+  };
+
+  Vault::Config config = Vault::ConfigBuilder().build();
+  Vault::Client vaultClient{config, authStrategy, httpErrorCallback};
+  Vault::KeyValue kv{vaultClient, Vault::KeyValue::Version::v1};
+  Vault::Path mount{"/test"};
+  Vault::KeyValue kv2{vaultClient, mount};
+  Vault::Parameters parameters(
     {
-        {"foo","world"},
-        {"baz","quux"},
-        {"something", "something else"},
-    });
+      {"foo","world"},
+      {"baz","quux"},
+      {"something", "something else"},
+    }
+  );
 
-    kv.put("hello", data);
-    kv2.put("hello", data);
+  Vault::Path key{"hello"};
 
-    std::cout << kv.get("hello") << std::endl;
-    std::cout << kv2.get("hello") << std::endl;
+  kv.create(key, parameters);
+  kv2.create(key, parameters);
+
+  std::cout << kv.read(key).value() << std::endl;
+  std::cout << kv2.read(key).value() << std::endl;
 }
